@@ -1,3 +1,4 @@
+
 # CVE-2026-19553 — Python TLS Hostname Verification Vulnerability
 
 ## 1. Project Overview
@@ -58,13 +59,13 @@ The TLS client was configured to trust this CA so that the experiment could focu
 | `tls_server.py` | Starts the locally hosted TLS server |
 | `exploit.py` | Tests TLS connections using `SSLContext.wrap_bio()` |
 | `patched_test.py` | Tests actual CPython behavior on vulnerable and patched Python versions |
-| `remediation.py` | Implements an application-level safeguard against missing or empty hostnames |
+| `remediation.py` | Implements application-level hostname validation and performs full TLS handshake verification |
 | `requirements.txt` | Lists the required Python dependency |
 | `certs/` | Stores locally generated certificates and private keys |
 | `screenshots/` | Stores evidence of the exploitation and remediation results |
 | `.gitignore` | Excludes generated certificates, private keys and temporary files from Git tracking |
 
-## 5. Exploitation Results
+## 5. Exploitation and Remediation Results
 
 ### Test 1 — Missing Hostname
 
@@ -92,6 +93,8 @@ WARNING: Missing hostname was accepted
 **Result:** Successful exploitation of the missing-hostname verification issue.
 
 Although hostname verification was enabled, the TLS handshake completed without checking the server certificate against an expected hostname.
+
+The server certificate was signed by the locally trusted CA, so certificate-chain verification could succeed even though hostname matching was not performed.
 
 ### Test 2 — Incorrect Hostname
 
@@ -145,26 +148,58 @@ Error: check_hostname requires server_hostname
 
 This comparison tests TLS object creation rather than performing a complete network handshake.
 
-### Test 4 — Application-Level Remediation
+### Test 4 — Application-Level Remediation with Full TLS Handshake
 
 An additional safeguard was implemented in `remediation.py`.
 
-The function checks that a non-empty hostname is supplied and that hostname verification is enabled before calling `SSLContext.wrap_bio()`.
+The `secure_wrap_bio()` function checks that a non-empty hostname is supplied and that hostname verification is enabled before calling `SSLContext.wrap_bio()`.
+
+The updated remediation test also performs a full TLS handshake to determine whether the supplied hostname matches the server certificate.
+
+Four hostname inputs were tested:
+
+- `None` — Missing hostname
+- `""` — Empty hostname
+- `"localhost"` — Incorrect hostname
+- `"attacker.test"` — Correct hostname
 
 **Observed output:**
 
 ```text
-Application-level remediation test
-Hostname verification: True
+CVE-2026-19553 - Full Remediation Test
 
-None -> rejected: A non-empty server_hostname is required
-'' -> rejected: A non-empty server_hostname is required
-'localhost' -> accepted for TLS setup (handshake not performed)
+Testing hostname: None
+Application validation: REJECTED
+Reason: A non-empty server_hostname is required
+--------------------------------------------------
+Testing hostname: ''
+Application validation: REJECTED
+Reason: A non-empty server_hostname is required
+--------------------------------------------------
+Testing hostname: 'localhost'
+Application validation: PASSED
+TLS handshake: REJECTED
+Reason: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
+Hostname mismatch, certificate is not valid for 'localhost'.
+--------------------------------------------------
+Testing hostname: 'attacker.test'
+Application validation: PASSED
+TLS handshake: SUCCESS
+--------------------------------------------------
 ```
 
-**Result:** Missing and empty hostnames were rejected before TLS setup.
+**Result:** The remediation successfully demonstrated both application-level hostname validation and TLS certificate hostname verification.
 
-The `localhost` input was accepted for TLS object creation because it was a non-empty hostname. Its certificate would still need to be verified during the TLS handshake.
+When `None` or an empty string was supplied, the application rejected the input before creating the TLS object.
+
+When `localhost` was supplied, application validation passed because a non-empty hostname was provided. However, the TLS handshake was rejected because the server certificate identified `attacker.test`, not `localhost`.
+
+When `attacker.test` was supplied, application validation passed and the TLS handshake completed successfully because the hostname matched the server certificate.
+
+These results demonstrate two separate security checks:
+
+1. Application-level validation prevents missing or empty hostnames from reaching `SSLContext.wrap_bio()`.
+2. TLS certificate verification ensures that the supplied hostname matches the server certificate.
 
 This application-level mitigation is separate from the official CPython patch.
 
@@ -229,7 +264,7 @@ The server listens on:
 127.0.0.1:8443
 ```
 
-Leave the server running during the following exploitation tests.
+Leave the server running during the following exploitation and remediation tests.
 
 ### Step 4 — Test the Missing Hostname
 
@@ -273,7 +308,7 @@ Run:
 py .\exploit.py --hostname attacker.test
 ```
 
-**Observed result:**
+**Expected result:**
 
 ```text
 RESULT: TLS handshake successful
@@ -314,24 +349,48 @@ The Python executable paths shown above are specific to the original testing env
 
 ### Step 8 — Run the Application-Level Remediation
 
-Run:
+Ensure that the local TLS server is still running in Terminal 1.
+
+In Terminal 2, run:
 
 ```powershell
 py .\remediation.py
 ```
 
+The script automatically tests four hostname inputs: `None`, `""`, `"localhost"` and `"attacker.test"`.
+
 **Observed result:**
 
 ```text
-Application-level remediation test
-Hostname verification: True
+CVE-2026-19553 - Full Remediation Test
 
-None -> rejected: A non-empty server_hostname is required
-'' -> rejected: A non-empty server_hostname is required
-'localhost' -> accepted for TLS setup (handshake not performed)
+Testing hostname: None
+Application validation: REJECTED
+Reason: A non-empty server_hostname is required
+--------------------------------------------------
+Testing hostname: ''
+Application validation: REJECTED
+Reason: A non-empty server_hostname is required
+--------------------------------------------------
+Testing hostname: 'localhost'
+Application validation: PASSED
+TLS handshake: REJECTED
+Reason: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
+Hostname mismatch, certificate is not valid for 'localhost'.
+--------------------------------------------------
+Testing hostname: 'attacker.test'
+Application validation: PASSED
+TLS handshake: SUCCESS
+--------------------------------------------------
 ```
 
-This demonstrates that application-level validation can prevent the missing-hostname configuration before TLS setup.
+The results demonstrate that:
+
+- Missing and empty hostnames are rejected before TLS setup.
+- An incorrect hostname passes initial validation but is rejected during the TLS handshake.
+- The correct hostname passes application validation and completes the TLS handshake successfully.
+
+This confirms that the application-level mitigation prevents missing-hostname TLS setup while maintaining certificate hostname verification.
 
 ## 8. Screenshot Evidence
 
@@ -339,12 +398,12 @@ The following screenshots were captured during testing:
 
 | Screenshot | Description |
 |---|---|
-| `screenshots/01_hostname_bypass.png` | Successful TLS handshake without hostname verification |
-| `screenshots/02_hostname_mismatch.png` | TLS connection rejected due to hostname mismatch |
-| `screenshots/03_remediation_test.png` | Missing and empty hostnames rejected by application-level validation |
+| `screenshots/01_hostname_bypass.png` | Successful TLS handshake without hostname verification on vulnerable Python 3.14.7 |
+| `screenshots/02_hostname_mismatch.png` | TLS connection rejected due to a hostname mismatch |
+| `screenshots/03_remediation_test.png` | Application-level validation rejects missing and empty hostnames; full TLS handshake rejects `localhost` and accepts `attacker.test` |
 | `screenshots/04_vulnerable_vs_patched.png` | Comparison between vulnerable Python 3.14.7 and patched Python 3.14.10 |
 
-These screenshots provide supporting evidence for the vulnerability assessment, exploitation and remediation results.
+These screenshots provide supporting evidence for the vulnerability assessment, exploitation, hostname verification and remediation results.
 
 ## 9. Remediation and Recommended Defences
 
@@ -354,11 +413,17 @@ The recommended remediation is to use a patched CPython release that enforces ho
 
 In this project, Python 3.14.10 was tested and rejected `server_hostname=None`.
 
+Upgrading to a patched Python version provides protection at the runtime level rather than relying solely on application-specific validation.
+
 ### 9.2 Validate the Expected Hostname
 
 Applications using `SSLContext.wrap_bio()` should explicitly require a valid, non-empty hostname.
 
 The `remediation.py` script demonstrates this approach by rejecting missing and empty hostname values before TLS object creation.
+
+The safeguard is implemented through the `secure_wrap_bio()` function, which raises a `ValueError` when the hostname is missing or empty.
+
+This prevents the vulnerable missing-hostname configuration from proceeding through the protected application code path.
 
 ### 9.3 Maintain Certificate Verification
 
@@ -371,6 +436,19 @@ context.verify_mode = ssl.CERT_REQUIRED
 
 Both certificate-chain validation and hostname matching are important for authenticating the intended TLS server.
 
+### 9.4 Verify the Server Hostname During the TLS Handshake
+
+Providing a non-empty hostname is not sufficient to establish a secure TLS connection.
+
+The hostname must also match the identity presented in the server certificate.
+
+The updated remediation test demonstrates this by testing two different hostnames:
+
+- `localhost` — Application validation passes, but the TLS handshake is rejected because the certificate belongs to `attacker.test`.
+- `attacker.test` — Application validation passes, and the TLS handshake succeeds because the certificate hostname matches.
+
+This confirms that the remediation does not simply accept every non-empty hostname as a verified server identity.
+
 ## 10. Limitations
 
 The experiment was performed using a locally hosted TLS server and locally generated certificates.
@@ -379,7 +457,11 @@ The client was explicitly configured to trust the test certificate authority. Th
 
 The patched-runtime comparison demonstrated rejection of the missing hostname during TLS object creation. It did not independently perform a full network handshake on Python 3.14.10.
 
-The application-level remediation was implemented separately from the official CPython patch.
+The updated application-level remediation performed full TLS handshakes for the non-empty hostname inputs `localhost` and `attacker.test`.
+
+The missing and empty hostname inputs were rejected before TLS object creation, so no handshake was attempted for those cases.
+
+The application-level remediation was implemented separately from the official CPython patch. It protects application code that uses the `secure_wrap_bio()` function but does not modify the underlying Python runtime.
 
 The experiment did not involve interception of real network traffic, an external attacker or a production system.
 
@@ -395,9 +477,11 @@ When `localhost` was explicitly supplied, Python rejected the connection because
 
 The same missing-hostname configuration was then tested on Python 3.14.10, which rejected the unsafe TLS setup with a `ValueError`.
 
-An additional application-level mitigation successfully rejected missing and empty hostnames before TLS object creation.
+An additional application-level mitigation was implemented to reject missing and empty hostnames before TLS object creation.
 
-Together, these results demonstrate the vulnerable behavior, a hostname verification control test, patched-runtime behavior and an application-level safeguard.
+The remediation test was extended to perform full TLS handshakes. The `localhost` hostname passed application validation but was rejected during certificate verification because of a hostname mismatch. The correct hostname, `attacker.test`, passed application validation and completed the TLS handshake successfully.
+
+Together, these results demonstrate the vulnerable behavior, a hostname verification control test, patched-runtime behavior, and an application-level safeguard with full TLS handshake verification.
 
 ## 12. References
 
