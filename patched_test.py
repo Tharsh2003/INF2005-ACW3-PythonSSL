@@ -1,41 +1,29 @@
+"""Test the actual CPython SSLContext.wrap_bio() behavior."""
 
 import ssl
 import sys
+from pathlib import Path
+
+CA_FILE = Path(__file__).resolve().parent / "certs" / "ca.crt"
 
 print("Python version:", sys.version.split()[0])
 print("OpenSSL version:", ssl.OPENSSL_VERSION)
 
-# Load our trusted certificate authority
-context = ssl.create_default_context(
-    cafile="certs/ca.crt"
-)
-
-# Enable hostname verification
+context = ssl.create_default_context(cafile=str(CA_FILE))
 context.check_hostname = True
 
-incoming = ssl.MemoryBIO()
-outgoing = ssl.MemoryBIO()
-
-# Deliberately omit the hostname
-server_hostname = None
-
 try:
-    # Simulate the patched hostname validation
-    if context.check_hostname and server_hostname is None:
-        raise ValueError(
-            "check_hostname requires server_hostname"
-        )
-
-    tls_object = context.wrap_bio(
-        incoming,
-        outgoing,
+    context.wrap_bio(
+        ssl.MemoryBIO(),
+        ssl.MemoryBIO(),
         server_side=False,
-        server_hostname=server_hostname
+        server_hostname=None
     )
 
-    print("SSLObject created successfully")
-
 except ValueError as error:
-    print("Connection rejected before TLS handshake")
+    print("RESULT: Actual runtime rejected missing hostname")
     print("Error:", error)
-    print("Missing hostname was correctly rejected")
+
+else:
+    print("RESULT: Actual runtime accepted missing hostname")
+    print("WARNING: No built-in rejection observed")
