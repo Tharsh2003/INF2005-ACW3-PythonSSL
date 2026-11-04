@@ -1,0 +1,14 @@
+# Private keys and generated certificates
+certs/*.key
+certs/*.crt
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment variables
+.env
