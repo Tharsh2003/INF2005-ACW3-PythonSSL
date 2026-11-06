@@ -499,3 +499,44 @@ Together, these results demonstrate the vulnerable behavior, a hostname verifica
 
 5. Python Software Foundation. **Python SSL Module Documentation.**  
    https://docs.python.org/3/library/ssl.html
+
+## Defence automated regression tests (Anja)
+
+Run from the project directory, using the certificate-generation environment
+with the dependencies in `requirements.txt` already installed:
+
+```sh
+.venv/certs/bin/python -B defence_regression.py
+```
+
+The default client interpreters are `/usr/local/bin/python3.12` (3.12.6) and
+`~/.pyenv/versions/3.12.15/bin/python3` (3.12.15). To specify their paths:
+
+```sh
+.venv/certs/bin/python -B defence_regression.py \
+  --vulnerable /usr/local/bin/python3.12 \
+  --patched "$HOME/.pyenv/versions/3.12.15/bin/python3"
+```
+
+The runner generates fresh certificates in a disposable directory using an
+unchanged copy of `generate_certs.py`, verifies their signatures, SAN, validity,
+constraints and key pairing, and runs unchanged copies of both Defence scripts.
+It starts the existing server on **127.0.0.1:8443**; leave this port free and do not
+run multiple suite instances concurrently. Startup/client timeouts and a cleanup
+handler stop the server and remove the temporary lab even on test failures.
+Existing `certs/` files are not overwritten. No dependencies are installed by the
+runner, and no external TLS endpoints or exploitation script are used.
+
+Each interpreter runs eight constructor checks, eight application-guard checks,
+three real TLS checks, and four unavailable-server classification checks. The
+negative test reserves a non-listening loopback port and verifies that connection
+refusal or timeout is classified as infrastructure failure, never as certificate rejection
+or success. Exit code **0** means all groups passed; **1** means a prerequisite,
+timeout, or regression failure (invalid CLI arguments return **2**).
+
+For **3.12.15**, omitted/`None` hostnames produce a `DeprecationWarning` by default;
+the separate warning-as-error mode adds explicit application policy. Neither
+constructor acceptance nor a warning alone demonstrates a verified TLS exchange.
+The trusted integration control must receive `TLS connection successful!`.
+Server EOF diagnostics accompanying rejected clients are not themselves security
+assertions; the client verification errors establish the rejection reasons.
